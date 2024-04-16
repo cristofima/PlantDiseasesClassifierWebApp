@@ -1,0 +1,118 @@
+﻿@page "/"
+@using PlantDiseasesClassifierWebApp.Services
+@using PlantDiseasesClassifierWebApp.Utils
+@using Microsoft.Azure.CognitiveServices.Vision.CustomVision.Prediction.Models
+
+<PageTitle>Home</PageTitle>
+
+<h1>Upload image</h1>
+
+<InputFile OnChange="@OnInputFileChange" accept=".jpg,.png" />
+
+<Button Color="ButtonColor.Primary" @onclick="ClassifyImage" disabled="@(file == null || (file != null && isLoading))">Classify image</Button>
+
+@if (!string.IsNullOrEmpty(base64Data))
+{
+    <div class="results_container">
+        <div class="img_container">
+            <img src="@base64Data" />
+        </div>
+        <div class="predictions_container">
+            @if (!string.IsNullOrEmpty(predictionText))
+            {
+                <p>@predictionText</p>
+            }
+
+            <PieChart @ref="pieChart" Width="500" />
+        </div>
+    </div>
+}
+
+@code {
+    private IBrowserFile file;
+    private string base64Data;
+    private IList<PredictionModel> predictions;
+
+    private PieChart pieChart = default!;
+    private PieChartOptions pieChartOptions = default!;
+    private ChartData chartData = default!;
+
+    private bool firstRender = true;
+    private bool isLoading = false;
+
+    private string predictionText = string.Empty;
+
+    [Inject]
+    private IAzureCustomVisionService azureCustomVisionService {get; set; }
+
+    private async Task OnInputFileChange(InputFileChangeEventArgs e)
+    {
+        this.file = e.File;
+        await this.ShowImageAsync();
+    }
+
+    private async Task ShowImageAsync()
+    {
+        var resizedFile = await this.file.RequestImageFileAsync(this.file.ContentType, 400, 400);
+        var buffer = new byte[resizedFile.Size];
+        await resizedFile.OpenReadStream().ReadAsync(buffer);
+        this.base64Data = $"data:{this.file.ContentType};base64,{Convert.ToBase64String(buffer)}";
+    }
+
+    private async Task ClassifyImage()
+    {
+        this.isLoading = true;
+        this.predictionText = string.Empty;
+        var memoryStream = await StreamUtil.ToMemoryStreamAsync(this.file.OpenReadStream());
+        this.predictions = this.azureCustomVisionService.ClassifyImage(memoryStream);
+        this.isLoading = false;
+        await this.InitChart();
+    }
+
+    private async Task InitChart()
+    {
+        this.chartData = this.GetChartData();
+
+        if (this.firstRender)
+        {
+            this.pieChartOptions = new();
+            this.pieChartOptions.Responsive = true;
+            this.pieChartOptions.Plugins.Title.Text = "Plant Diseases Predictions";
+            this.pieChartOptions.Plugins.Title.Display = true;
+            this.pieChartOptions.Plugins.Title.Font.Size = 20;
+            this.pieChartOptions.Plugins.Legend.Position = "right";
+
+            await pieChart.InitializeAsync(chartData, pieChartOptions);
+            this.firstRender = false;
+        }
+        else
+        {
+            await pieChart.UpdateAsync(chartData, pieChartOptions);
+        }
+    }
+
+    private ChartData GetChartData()
+    {
+        var validPredictions = this.predictions.Where(p => Math.Round(p.Probability * 100, 2) > 0)
+            .Select(p => new
+            {
+                p.TagName,
+                Probability = Math.Round(p.Probability * 100, 2)
+            }).ToList();
+
+        var labels = validPredictions.Select(p => p.TagName).ToList();
+
+        var datasets = new List<IChartDataset>();
+
+        var data = validPredictions.Select(p => p.Probability).ToList();
+        datasets.Add(new PieChartDataset() { Data = data });
+
+        this.predictionText = $"{labels[0]}, {data[0]}%";
+
+        return new ChartData
+            {
+                Labels = labels,
+                Datasets = datasets
+            };
+    }
+}
